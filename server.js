@@ -14,16 +14,23 @@ app.use(express.json());
 const path = require('path');
 
 // Routes
+app.get("/", (req, res) => {
+    res.json({
+        status: "OK",
+        message: "AI Support Center Backend is running 🚀"
+    });
+});
+
+app.get("/health", (req, res) => {
+    res.json({ status: "healthy" });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/resume', require('./routes/resumeRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 
 // Static folder for uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Backend is running' });
-});
 
 // Initialize DB and Start Server
 const initDbAndStartServer = async () => {
