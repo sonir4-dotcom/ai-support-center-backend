@@ -1,26 +1,25 @@
-const mysql = require('mysql2');
+const { Pool } = require('pg');
 require('dotenv').config();
 
-const pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'ai_support_center_db',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Use DATABASE_URL for Render PostgreSQL
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: isProduction ? { rejectUnauthorized: false } : false
 });
 
-const promisePool = pool.promise();
-
 // Test the connection
-pool.getConnection((err, connection) => {
+pool.connect((err, client, release) => {
     if (err) {
-        console.error('❌ Database connection failed:', err.message);
+        console.error('❌ PostgreSQL Database connection failed:', err.message);
     } else {
-        console.log('✅ Connected to MySQL Database!');
-        connection.release();
+        console.log('✅ Connected to PostgreSQL Database!');
+        release();
     }
 });
 
-module.exports = promisePool;
+module.exports = {
+    query: (text, params) => pool.query(text, params),
+    pool
+};

@@ -10,15 +10,16 @@ exports.saveResume = async (req, res) => {
     }
 
     try {
-        // Upsert (Insert or Update if exists) using ON DUPLICATE KEY
-        // Assuming user_id is UNIQUE in resumes table
+        // Upsert (Insert or Update if exists) using ON CONFLICT (user_id)
         const query = `
             INSERT INTO resumes (user_id, resume_data) 
-            VALUES (?, ?) 
-            ON DUPLICATE KEY UPDATE resume_data = VALUES(resume_data)
+            VALUES ($1, $2) 
+            ON CONFLICT (user_id) DO UPDATE 
+            SET resume_data = EXCLUDED.resume_data, 
+                updated_at = CURRENT_TIMESTAMP
         `;
 
-        await db.query(query, [userId, resumeData]);
+        await db.query(query, [userId, req.body]); // pg handles objects for JSONB
 
         res.json({ message: 'Resume saved successfully' });
 
@@ -33,13 +34,13 @@ exports.getResume = async (req, res) => {
     const userId = req.user.id;
 
     try {
-        const [rows] = await db.query('SELECT resume_data FROM resumes WHERE user_id = ?', [userId]);
+        const { rows } = await db.query('SELECT resume_data FROM resumes WHERE user_id = $1', [userId]);
 
         if (rows.length === 0) {
             return res.status(404).json({ message: 'Resume not found' });
         }
 
-        // Return the JSON object directly
+        // Return the JSON object directly (pg returns it as an object for JSONB)
         res.json(rows[0].resume_data);
 
     } catch (error) {
