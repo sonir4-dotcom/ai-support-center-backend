@@ -8,5 +8,6 @@ router.use(authMiddleware);
 
 router.post('/', resumeController.saveResume);
 router.get('/', resumeController.getResume);
+router.get('/download', resumeController.downloadResume);
 
 module.exports = router;
