@@ -95,6 +95,32 @@ const initDbAndStartServer = async () => {
         `);
         console.log('✅ Resumes table checked/created');
 
+        // Create Categories Table if not exists
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS categories (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                slug VARCHAR(255) NOT NULL UNIQUE,
+                type VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('✅ Categories table checked/created');
+
+        // Seed default categories if none exist
+        const cats = await db.query('SELECT count(*) FROM categories');
+        if (parseInt(cats.rows[0].count) === 0) {
+            await db.query(`
+                INSERT INTO categories (name, slug, type) VALUES 
+                ('Everything', 'all', 'all'),
+                ('Videos', 'video', 'video'),
+                ('Games', 'game', 'game'),
+                ('Tools', 'tool', 'tool'),
+                ('Tutorials', 'tutorial', 'tutorial')
+            `);
+            console.log('✅ Default categories seeded');
+        }
+
         // Create User Uploads Table if not exists
         await db.query(`
             CREATE TABLE IF NOT EXISTS user_uploads (
@@ -104,6 +130,8 @@ const initDbAndStartServer = async () => {
                 description TEXT,
                 type VARCHAR(50) NOT NULL,
                 category VARCHAR(50),
+                category_id INT,
+                visibility VARCHAR(20) DEFAULT 'public',
                 file_url TEXT,
                 thumbnail TEXT,
                 status VARCHAR(50) DEFAULT 'approved',

@@ -43,6 +43,48 @@ const upload = multer({
     }
 });
 
+// Helper to find or create category
+async function findOrCreateCategory(type, title) {
+    let slug = 'tool';
+    let name = 'Tools';
+    let ctype = 'tool';
+
+    if (type === 'video') {
+        slug = 'video';
+        name = 'Videos';
+        ctype = 'video';
+    } else if (type === 'html') {
+        slug = 'game';
+        name = 'Games';
+        ctype = 'game';
+    } else if (title.toLowerCase().includes('tutorial')) {
+        slug = 'tutorial';
+        name = 'Tutorials';
+        ctype = 'tutorial';
+    }
+
+    try {
+        const res = await db.query('SELECT id FROM categories WHERE slug = $1', [slug]);
+        if (res.rows.length > 0) return res.rows[0].id;
+
+        const insert = await db.query('INSERT INTO categories (name, slug, type) VALUES ($1, $2, $3) RETURNING id', [name, slug, ctype]);
+        return insert.rows[0].id;
+    } catch (e) {
+        console.error('[CATEGORY ERR]', e);
+        return null;
+    }
+}
+
+// GET /api/community/categories
+router.get('/categories', async (req, res) => {
+    try {
+        const result = await db.query('SELECT * FROM categories ORDER BY id ASC');
+        res.json({ success: true, categories: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to fetch categories' });
+    }
+});
+
 // POST /api/community/upload
 router.post('/upload', authMiddleware, (req, res, next) => {
     upload.single('file')(req, res, (err) => {
@@ -66,97 +108,53 @@ router.post('/upload', authMiddleware, (req, res, next) => {
 
         let type = 'link';
         let file_url = external_link || '';
-        let category = 'Tool'; // Default
+        let categoryName = 'Tool';
 
         if (req.file) {
             console.log(`[UPLOAD] Processing file: ${req.file.originalname} (${req.file.mimetype})`);
             const ext = path.extname(req.file.originalname).toLowerCase();
             const uniqueName = `community-${Date.now()}`;
-
-            // Base directory for community uploads
             const communityBase = path.resolve(__dirname, '../uploads/community');
-            if (!fs.existsSync(communityBase)) {
-                fs.mkdirSync(communityBase, { recursive: true });
-            }
 
             if (ext === '.zip') {
                 type = 'html';
-                // Extraction path per requirement: /uploads/community/tools/{uploadId}/
                 const targetDir = path.join(communityBase, 'tools', uniqueName);
-                console.log(`[UPLOAD] Extracting ZIP to: ${targetDir}`);
-
-                // Extract ZIP
                 const zip = new AdmZip(req.file.path);
                 const entries = zip.getEntries();
                 const fileList = entries.map(e => e.entryName.toLowerCase().replace(/\\/g, '/'));
 
-                // MANDATORY: ZIP must contain index.html
                 if (!fileList.includes('index.html') && !fileList.some(f => f.endsWith('/index.html'))) {
-                    // Try to find ANY html file as fallback? No, requirement says: "Reject ZIP without index.html"
-                    return res.status(400).json({ success: false, message: 'ZIP must contain index.html at root or within a folder.' });
+                    return res.status(400).json({ success: false, message: 'ZIP must contain index.html' });
                 }
 
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
+                if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
                 zip.extractAllTo(targetDir, true);
 
-                // Auto-categorization
-                if (fileList.some(name => name.includes('game') || name.includes('canvas'))) category = 'Game';
-                else category = 'Tool';
-
-                let entryPoint = 'index.html';
-                if (!fileList.includes('index.html')) {
-                    // Find where index.html is
-                    const foundIndex = fileList.find(f => f.endsWith('/index.html'));
-                    if (foundIndex) entryPoint = foundIndex;
-                }
-
+                categoryName = fileList.some(name => name.includes('game') || name.includes('canvas')) ? 'Game' : 'Tool';
+                let entryPoint = fileList.includes('index.html') ? 'index.html' : fileList.find(f => f.endsWith('/index.html'));
                 file_url = `/uploads/community/tools/${uniqueName}/${entryPoint}`;
-                console.log(`[UPLOAD] HTML Tool ready at: ${file_url}`);
             } else {
-                // Video upload
                 type = 'video';
-                category = 'Tutorial';
+                categoryName = 'Tutorial';
                 const videoDir = path.join(communityBase, 'videos');
-                if (!fs.existsSync(videoDir)) {
-                    fs.mkdirSync(videoDir, { recursive: true });
-                }
-
+                if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
                 const finalName = `${Date.now()}-${req.file.filename}`;
-                const finalPath = path.join(videoDir, finalName);
-                console.log(`[UPLOAD] Moving video to: ${finalPath}`);
-
-                fs.renameSync(req.file.path, finalPath);
+                fs.renameSync(req.file.path, path.join(videoDir, finalName));
                 file_url = `/uploads/community/videos/${finalName}`;
-                console.log(`[UPLOAD] Video ready at: ${file_url}`);
             }
 
-            // Cleanup temp file if it still exists (e.g. after ZIP extraction)
-            if (fs.existsSync(req.file.path)) {
-                try {
-                    fs.unlinkSync(req.file.path);
-                } catch (e) {
-                    console.warn(`[UPLOAD] Failed to cleanup temp file: ${req.file.path}`, e);
-                }
-            }
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         }
 
-        // Save to DB
+        const category_id = await findOrCreateCategory(type, title);
+
         const result = await db.query(
-            `INSERT INTO user_uploads (user_id, title, description, type, category, file_url, status) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-            [user_id, title, description, type, category, file_url, 'approved']
+            `INSERT INTO user_uploads (user_id, title, description, type, category, category_id, file_url, status) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+            [user_id, title, description, type, categoryName, category_id, file_url, 'approved']
         );
-        const item = result.rows[0];
-        console.log(`[SECURITY] Community upload successful: ID ${item.id} | Author: ${req.user.name || 'Anonymous'} | Type: ${type}`);
 
-        res.status(201).json({
-            success: true,
-            message: 'Content uploaded and published successfully!',
-            item: item
-        });
-
+        res.status(201).json({ success: true, message: 'Published successfully!', item: result.rows[0] });
     } catch (error) {
         console.error('Upload Error:', error);
         res.status(500).json({ success: false, message: 'Internal server error' });
@@ -167,11 +165,17 @@ router.post('/upload', authMiddleware, (req, res, next) => {
 router.get('/list', async (req, res) => {
     try {
         const { category } = req.query;
-        let query = 'SELECT u.*, users.name as author FROM user_uploads u JOIN users ON u.user_id = users.id WHERE u.status = $1';
+        let query = `
+            SELECT u.*, users.name as author, c.name as category_name, c.slug as category_slug 
+            FROM user_uploads u 
+            JOIN users ON u.user_id = users.id 
+            LEFT JOIN categories c ON u.category_id = c.id 
+            WHERE u.status = $1
+        `;
         let params = ['approved'];
 
-        if (category) {
-            query += ' AND u.category = $2';
+        if (category && category !== 'all') {
+            query += ' AND (c.slug = $2 OR c.type = $2)';
             params.push(category);
         }
 
@@ -179,8 +183,7 @@ router.get('/list', async (req, res) => {
         const result = await db.query(query, params);
         res.json({ success: true, items: result.rows });
     } catch (error) {
-        console.error('[DATABASE] Fetch Error:', error);
-        res.status(500).json({ success: false, message: 'Failed to fetch community items. Database error.' });
+        res.status(500).json({ success: false, message: 'Database error' });
     }
 });
 
