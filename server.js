@@ -29,6 +29,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/resume', require('./routes/resumeRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/community', require('./routes/communityRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf-to-text', require('./routes/pdfRoutes'));
 
 // Debug Route: List all registered routes and DB status
@@ -77,6 +78,8 @@ const initDbAndStartServer = async () => {
                 name VARCHAR(255) NOT NULL,
                 email VARCHAR(255) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
+                role VARCHAR(20) DEFAULT 'user',
+                is_suspended BOOLEAN DEFAULT false,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
@@ -102,6 +105,7 @@ const initDbAndStartServer = async () => {
                 name VARCHAR(255) NOT NULL UNIQUE,
                 slug VARCHAR(255) NOT NULL UNIQUE,
                 type VARCHAR(50) NOT NULL,
+                is_visible BOOLEAN DEFAULT true,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
@@ -132,11 +136,14 @@ const initDbAndStartServer = async () => {
                 category VARCHAR(50),
                 category_id INT,
                 visibility VARCHAR(20) DEFAULT 'public',
+                agreement_accepted BOOLEAN DEFAULT false,
+                agreement_timestamp TIMESTAMP,
                 file_url TEXT,
                 thumbnail TEXT,
                 status VARCHAR(50) DEFAULT 'approved',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
             )
         `);
         console.log('✅ User Uploads table checked/created');

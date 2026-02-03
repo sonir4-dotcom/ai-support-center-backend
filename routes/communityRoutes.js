@@ -99,8 +99,16 @@ router.post('/upload', authMiddleware, (req, res, next) => {
     });
 }, async (req, res) => {
     try {
-        const { title, description, external_link } = req.body;
+        const { title, description, external_link, agreementAccepted } = req.body;
         const user_id = req.user.id;
+
+        // LEGAL ENFORCEMENT
+        if (agreementAccepted !== true && agreementAccepted !== 'true') {
+            return res.status(403).json({
+                success: false,
+                message: 'You must accept the legal agreement before uploading.'
+            });
+        }
 
         if (!req.file && !external_link) {
             return res.status(400).json({ message: 'Missing file or external link' });
@@ -149,9 +157,9 @@ router.post('/upload', authMiddleware, (req, res, next) => {
         const category_id = await findOrCreateCategory(type, title);
 
         const result = await db.query(
-            `INSERT INTO user_uploads (user_id, title, description, type, category, category_id, file_url, status) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [user_id, title, description, type, categoryName, category_id, file_url, 'approved']
+            `INSERT INTO user_uploads (user_id, title, description, type, category, category_id, file_url, status, agreement_accepted, agreement_timestamp) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+            [user_id, title, description, type, categoryName, category_id, file_url, 'approved', true, new Date()]
         );
 
         res.status(201).json({ success: true, message: 'Published successfully!', item: result.rows[0] });
