@@ -34,17 +34,28 @@ const upload = multer({
     storage: storage,
     limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
     fileFilter: (req, file, cb) => {
-        const allowedExts = ['.zip', '.mp4', '.mov'];
+        const allowedExts = ['.zip', '.mp4', '.webm', '.ogg', '.mov', '.mkv', '.avi', '.m4v'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowedExts.includes(ext)) {
             return cb(null, true);
         }
-        cb(new Error('Only ZIP files and Video files are allowed!'));
+        cb(new Error('Only ZIP files and common Video files are allowed!'));
     }
 });
 
-// POST /api/user-uploads/submit
-router.post('/submit', authMiddleware, upload.single('file'), async (req, res) => {
+// POST /api/community/upload
+router.post('/upload', authMiddleware, (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+            console.error('[MULTER ERROR]', err);
+            return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
+        } else if (err) {
+            console.error('[UPLOAD ERROR]', err);
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         const { title, description, external_link } = req.body;
         const user_id = req.user.id;
@@ -70,30 +81,38 @@ router.post('/submit', authMiddleware, upload.single('file'), async (req, res) =
 
             if (ext === '.zip') {
                 type = 'html';
-                const targetDir = path.join(communityBase, uniqueName);
+                // Extraction path per requirement: /uploads/community/tools/{uploadId}/
+                const targetDir = path.join(communityBase, 'tools', uniqueName);
                 console.log(`[UPLOAD] Extracting ZIP to: ${targetDir}`);
 
                 // Extract ZIP
                 const zip = new AdmZip(req.file.path);
+                const entries = zip.getEntries();
+                const fileList = entries.map(e => e.entryName.toLowerCase().replace(/\\/g, '/'));
+
+                // MANDATORY: ZIP must contain index.html
+                if (!fileList.includes('index.html') && !fileList.some(f => f.endsWith('/index.html'))) {
+                    // Try to find ANY html file as fallback? No, requirement says: "Reject ZIP without index.html"
+                    return res.status(400).json({ success: false, message: 'ZIP must contain index.html at root or within a folder.' });
+                }
+
                 if (!fs.existsSync(targetDir)) {
                     fs.mkdirSync(targetDir, { recursive: true });
                 }
                 zip.extractAllTo(targetDir, true);
 
                 // Auto-categorization
-                const entries = zip.getEntries();
-                const fileList = entries.map(e => e.entryName.toLowerCase());
-
                 if (fileList.some(name => name.includes('game') || name.includes('canvas'))) category = 'Game';
                 else category = 'Tool';
 
                 let entryPoint = 'index.html';
                 if (!fileList.includes('index.html')) {
-                    const htmlFiles = fileList.filter(f => f.endsWith('.html'));
-                    if (htmlFiles.length > 0) entryPoint = htmlFiles[0];
+                    // Find where index.html is
+                    const foundIndex = fileList.find(f => f.endsWith('/index.html'));
+                    if (foundIndex) entryPoint = foundIndex;
                 }
 
-                file_url = `/uploads/community/${uniqueName}/${entryPoint}`;
+                file_url = `/uploads/community/tools/${uniqueName}/${entryPoint}`;
                 console.log(`[UPLOAD] HTML Tool ready at: ${file_url}`);
             } else {
                 // Video upload
@@ -144,8 +163,8 @@ router.post('/submit', authMiddleware, upload.single('file'), async (req, res) =
     }
 });
 
-// GET /api/user-uploads
-router.get('/', async (req, res) => {
+// GET /api/community/list
+router.get('/list', async (req, res) => {
     try {
         const { category } = req.query;
         let query = 'SELECT u.*, users.name as author FROM user_uploads u JOIN users ON u.user_id = users.id WHERE u.status = $1';

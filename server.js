@@ -28,7 +28,7 @@ app.get("/health", (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/resume', require('./routes/resumeRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
-app.use('/api/user-uploads', require('./routes/userUploadRoutes'));
+app.use('/api/community', require('./routes/communityRoutes'));
 app.use('/api/pdf-to-text', require('./routes/pdfRoutes'));
 
 // Debug Route: List all registered routes and DB status
