@@ -6,7 +6,39 @@ const path = require('path');
 const authMiddleware = require('../middleware/authMiddleware');
 const adminMiddleware = require('../middleware/adminMiddleware');
 
-// PROTECT ALL ADMIN ROUTES
+// --- BOOTSTRAP (TEMPORARY FOR SHELL-RESTRICTED ENVIRONMENTS) ---
+
+// POST /api/admin/bootstrap - Promote user to first admin if none exist
+router.post('/bootstrap', authMiddleware, async (req, res) => {
+    try {
+        // Check if any admin exists
+        const adminCheck = await db.query("SELECT COUNT(*) FROM users WHERE role = 'admin'");
+        const adminCount = parseInt(adminCheck.rows[0].count);
+
+        if (adminCount > 0) {
+            console.warn(`[SECURITY] Blocked bootstrap attempt by User ID: ${req.user.id}. Admin already exists.`);
+            return res.status(403).json({
+                success: false,
+                message: 'Bootstrap disabled: System already has an administrator.'
+            });
+        }
+
+        // Promote the current user
+        await db.query("UPDATE users SET role = 'admin' WHERE id = $1", [req.user.id]);
+
+        console.log(`[SYSTEM] User ID ${req.user.id} (${req.user.email}) bootstrapped as first Admin.`);
+        res.json({
+            success: true,
+            message: 'You have been successfully promoted to Administrator.',
+            role: 'admin'
+        });
+    } catch (error) {
+        console.error('[ADMIN] Bootstrap error:', error);
+        res.status(500).json({ success: false, message: 'Internal server error during bootstrap' });
+    }
+});
+
+// PROTECT ALL OTHER ADMIN ROUTES
 router.use(authMiddleware, adminMiddleware);
 
 // --- USER MANAGEMENT ---
