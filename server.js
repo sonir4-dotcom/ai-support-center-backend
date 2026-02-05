@@ -3,6 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const db = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
+const runMigration = require('./utils/migrationRunner');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -32,6 +33,7 @@ app.use('/api/community', require('./routes/communityRoutes'));
 app.use('/api/import', require('./routes/importRoutes'));
 app.use('/api/recommendations', require('./routes/recommendationRoutes'));
 app.use('/api/chatbot', require('./routes/chatbotRoutes'));
+app.use('/api/images', require('./routes/imageRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf-to-text', require('./routes/pdfRoutes'));
 
@@ -74,89 +76,115 @@ app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 // Initialize DB and Start Server
 const initDbAndStartServer = async () => {
     try {
-        // Create Users Table if not exists
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                email VARCHAR(255) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL,
-                role VARCHAR(20) DEFAULT 'user',
-                is_suspended BOOLEAN DEFAULT false,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log('✅ Users table checked/created');
+        // 1. Check Database Connection
+        if (!db.isConnected()) {
+            console.warn('⚠️  Skipping DB initialization (No Connection). Server will start in limited mode.');
+        } else {
+            console.log('✅ DB Connected. Verifying Tables...');
 
-        // Create Resumes Table if not exists
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS resumes (
-                id SERIAL PRIMARY KEY,
-                user_id INT NOT NULL UNIQUE,
-                resume_data JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-        `);
-        console.log('✅ Resumes table checked/created');
-
-        // Create Categories Table if not exists
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS categories (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                slug VARCHAR(255) NOT NULL UNIQUE,
-                type VARCHAR(50) NOT NULL,
-                is_visible BOOLEAN DEFAULT true,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log('✅ Categories table checked/created');
-
-        // Seed default categories if none exist
-        const cats = await db.query('SELECT count(*) FROM categories');
-        if (parseInt(cats.rows[0].count) === 0) {
+            // Create Users Table if not exists
             await db.query(`
-                INSERT INTO categories (name, slug, type) VALUES 
-                ('Everything', 'all', 'all'),
-                ('Videos', 'video', 'video'),
-                ('Games', 'game', 'game'),
-                ('Tools', 'tool', 'tool'),
-                ('Tutorials', 'tutorial', 'tutorial')
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    password VARCHAR(255) NOT NULL,
+                    role VARCHAR(20) DEFAULT 'user',
+                    is_suspended BOOLEAN DEFAULT false,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             `);
-            console.log('✅ Default categories seeded');
+            console.log('✅ Users table checked/created');
+
+            // Create Resumes Table if not exists
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL UNIQUE,
+                    resume_data JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            `);
+            console.log('✅ Resumes table checked/created');
+
+            // Create Categories Table if not exists
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS categories (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL UNIQUE,
+                    slug VARCHAR(255) NOT NULL UNIQUE,
+                    type VARCHAR(50) NOT NULL,
+                    is_visible BOOLEAN DEFAULT true,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            console.log('✅ Categories table checked/created');
+
+            // Seed default categories if none exist
+            try {
+                const cats = await db.query('SELECT count(*) FROM categories');
+                if (parseInt(cats.rows[0].count) === 0) {
+                    await db.query(`
+                        INSERT INTO categories (name, slug, type) VALUES 
+                        ('Everything', 'all', 'all'),
+                        ('Videos', 'video', 'video'),
+                        ('Games', 'game', 'game'),
+                        ('Tools', 'tool', 'tool'),
+                        ('Tutorials', 'tutorial', 'tutorial')
+                    `);
+                    console.log('✅ Default categories seeded');
+                }
+            } catch (seedErr) {
+                console.warn('⚠️ Seeding skipped or failed:', seedErr.message);
+            }
+
+            // Create User Uploads Table if not exists
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS user_uploads (
+                    id SERIAL PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    type VARCHAR(50) NOT NULL,
+                    category VARCHAR(50),
+                    category_id INT,
+                    visibility VARCHAR(20) DEFAULT 'public',
+                    agreement_accepted BOOLEAN DEFAULT false,
+                    agreement_timestamp TIMESTAMP,
+                    file_url TEXT,
+                    thumbnail TEXT,
+                    status VARCHAR(50) DEFAULT 'approved',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+                )
+            `);
+            console.log('✅ User Uploads table checked/created');
+
+            // 2. AUTO-RUN MIGRATIONS (Production/Render Only)
+            if (process.env.RENDER === 'true' || process.env.NODE_ENV === 'production') {
+                try {
+                    console.log('🚀 Production Environment detected. Running Migrations...');
+                    await runMigration('migrations/phase_8_creator_schema.sql');
+                    console.log('✅ Phase 8 migrations checked');
+                } catch (migErr) {
+                    console.error('❌ Migration failed but server will continue:', migErr.message);
+                }
+            } else {
+                console.log('ℹ️  Skipping auto-migration (Not Production/Render).');
+            }
         }
 
-        // Create User Uploads Table if not exists
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS user_uploads (
-                id SERIAL PRIMARY KEY,
-                user_id INT NOT NULL,
-                title VARCHAR(255) NOT NULL,
-                description TEXT,
-                type VARCHAR(50) NOT NULL,
-                category VARCHAR(50),
-                category_id INT,
-                visibility VARCHAR(20) DEFAULT 'public',
-                agreement_accepted BOOLEAN DEFAULT false,
-                agreement_timestamp TIMESTAMP,
-                file_url TEXT,
-                thumbnail TEXT,
-                status VARCHAR(50) DEFAULT 'approved',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-            )
-        `);
-        console.log('✅ User Uploads table checked/created');
-
+        // 3. Start Server (Always start unless port binding fails)
         app.listen(PORT, () => {
-
             console.log(`Server running on port ${PORT}`);
         });
+
     } catch (error) {
-        console.error('❌ Failed to initialize database:', error);
+        console.error('❌ Failed to initialize:', error);
+        // Do not exit process, try to keep server alive if possible or let the container restart
         process.exit(1);
     }
 };
