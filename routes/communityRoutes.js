@@ -43,32 +43,55 @@ const upload = multer({
     }
 });
 
-// Helper to find or create category
-async function findOrCreateCategory(type, title) {
-    let slug = 'tool';
-    let name = 'Tools';
-    let ctype = 'tool';
+// Helper to find or create category using keyword-based detection
+async function findOrCreateCategory(type, title, description = '') {
+    // Keyword mapping for intelligent category detection
+    const categoryKeywords = {
+        'game': ['game', 'play', 'puzzle', 'quiz', 'match', 'racing', 'adventure', 'arcade', 'shooter', 'strategy'],
+        'video': ['video', 'tutorial', 'demo', 'guide', 'walkthrough', 'review', 'vlog', 'animation'],
+        'tool': ['tool', 'calculator', 'converter', 'generator', 'builder', 'editor', 'utility', 'helper'],
+        '3d': ['3d', 'three.js', 'webgl', 'three-dimensional', 'model', 'render'],
+        'ai': ['ai', 'artificial intelligence', 'machine learning', 'neural', 'chatbot', 'gpt'],
+        'education': ['learn', 'education', 'study', 'course', 'lesson', 'training', 'tutorial'],
+        'productivity': ['productivity', 'task', 'todo', 'planner', 'organizer', 'schedule'],
+        'entertainment': ['fun', 'entertainment', 'music', 'art', 'creative', 'design'],
+        'finance': ['finance', 'money', 'budget', 'tax', 'emi', 'loan', 'investment'],
+        'health': ['health', 'fitness', 'bmi', 'workout', 'exercise', 'nutrition']
+    };
 
-    if (type === 'video') {
-        slug = 'video';
-        name = 'Videos';
-        ctype = 'video';
-    } else if (type === 'html') {
-        slug = 'game';
-        name = 'Games';
-        ctype = 'game';
-    } else if (title.toLowerCase().includes('tutorial')) {
-        slug = 'tutorial';
-        name = 'Tutorials';
-        ctype = 'tutorial';
+    // Combine title and description for better detection
+    const searchText = `${title} ${description}`.toLowerCase();
+
+    // Find matching category based on keywords
+    let detectedCategory = 'general';
+    let maxMatches = 0;
+
+    for (const [category, keywords] of Object.entries(categoryKeywords)) {
+        const matches = keywords.filter(keyword => searchText.includes(keyword)).length;
+        if (matches > maxMatches) {
+            maxMatches = matches;
+            detectedCategory = category;
+        }
     }
 
-    try {
-        const res = await db.query('SELECT id FROM categories WHERE slug = $1', [slug]);
-        if (res.rows.length > 0) return res.rows[0].id;
+    // Capitalize category name
+    const categoryName = detectedCategory.charAt(0).toUpperCase() + detectedCategory.slice(1);
+    const slug = detectedCategory;
 
-        const insert = await db.query('INSERT INTO categories (name, slug, type) VALUES ($1, $2, $3) RETURNING id', [name, slug, ctype]);
-        return insert.rows[0].id;
+    try {
+        // Check if category exists
+        let result = await db.query('SELECT id, name FROM categories WHERE slug = $1', [slug]);
+
+        if (result.rows.length === 0) {
+            // Auto-create new category
+            console.log(`[CATEGORY] Auto-creating category: ${categoryName} (${slug})`);
+            result = await db.query(
+                'INSERT INTO categories (name, slug, type) VALUES ($1, $2, $3) RETURNING id, name',
+                [categoryName, slug, type]
+            );
+        }
+
+        return { id: result.rows[0].id, name: result.rows[0].name };
     } catch (e) {
         console.error('[CATEGORY ERR]', e);
         return null;
@@ -142,6 +165,24 @@ router.post('/upload', authMiddleware, (req, res, next) => {
                 let entryPoint = fileList.includes('index.html') ? 'index.html' : fileList.find(f => f.endsWith('/index.html'));
                 file_url = `/uploads/community/tools/${uniqueName}/${entryPoint}`;
             } else {
+                // STRICT VIDEO MIME TYPE VALIDATION
+                const allowedVideoMimes = [
+                    'video/mp4',
+                    'video/webm',
+                    'video/ogg',
+                    'video/x-matroska',
+                    'video/quicktime'
+                ];
+
+                if (!allowedVideoMimes.includes(req.file.mimetype)) {
+                    // Clean up temp file
+                    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+                    return res.status(400).json({
+                        success: false,
+                        message: `Invalid video format. Allowed: MP4, WebM, OGG, MKV, MOV. Received: ${req.file.mimetype}`
+                    });
+                }
+
                 type = 'video';
                 categoryName = 'Tutorial';
                 const videoDir = path.join(communityBase, 'videos');
@@ -154,12 +195,14 @@ router.post('/upload', authMiddleware, (req, res, next) => {
             if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         }
 
-        const category_id = await findOrCreateCategory(type, title);
+        const categoryResult = await findOrCreateCategory(type, title, description || '');
+        const category_id = categoryResult ? categoryResult.id : null;
+        const detectedCategoryName = categoryResult ? categoryResult.name : 'General';
 
         const result = await db.query(
             `INSERT INTO user_uploads (user_id, title, description, type, category, category_id, file_url, status, agreement_accepted, agreement_timestamp) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-            [user_id, title, description, type, categoryName, category_id, file_url, 'approved', true, new Date()]
+            [user_id, title, description, type, detectedCategoryName, category_id, file_url, 'approved', true, new Date()]
         );
 
         res.status(201).json({ success: true, message: 'Published successfully!', item: result.rows[0] });
