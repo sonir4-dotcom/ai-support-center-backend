@@ -98,6 +98,19 @@ async function findOrCreateCategory(type, title, description = '') {
     }
 }
 
+// Helper to generate URL-friendly slug
+function generateSlug(title, id) {
+    const baseSlug = title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .substring(0, 50); // Limit length
+
+    // Add base36 encoded ID for uniqueness
+    const uniqueId = id.toString(36);
+    return `${baseSlug}-${uniqueId}`;
+}
+
 // GET /api/community/categories
 router.get('/categories', async (req, res) => {
     try {
@@ -161,9 +174,27 @@ router.post('/upload', authMiddleware, (req, res, next) => {
                 if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
                 zip.extractAllTo(targetDir, true);
 
+                // PERFORMANCE GUARD: Check bundle size
+                const { calculateFolderSize } = require('../utils/fileUtils');
+                const bundleSize = calculateFolderSize(targetDir);
+                const MAX_BUNDLE_SIZE = 10 * 1024 * 1024; // 10MB
+
+                console.log(`[PERFORMANCE] Bundle size: ${(bundleSize / 1024 / 1024).toFixed(2)}MB`);
+
+                // If bundle exceeds 10MB, mark for manual review
+                let uploadStatus = 'approved';
+                if (bundleSize > MAX_BUNDLE_SIZE) {
+                    uploadStatus = 'pending';
+                    console.warn(`[PERFORMANCE] Large bundle detected (${(bundleSize / 1024 / 1024).toFixed(2)}MB) - sending to admin review`);
+                }
+
                 categoryName = fileList.some(name => name.includes('game') || name.includes('canvas')) ? 'Game' : 'Tool';
                 let entryPoint = fileList.includes('index.html') ? 'index.html' : fileList.find(f => f.endsWith('/index.html'));
                 file_url = `/uploads/community/tools/${uniqueName}/${entryPoint}`;
+
+                // Store upload status for later use
+                type = 'html';
+                // We'll use uploadStatus variable below
             } else {
                 // STRICT VIDEO MIME TYPE VALIDATION
                 const allowedVideoMimes = [
@@ -199,13 +230,21 @@ router.post('/upload', authMiddleware, (req, res, next) => {
         const category_id = categoryResult ? categoryResult.id : null;
         const detectedCategoryName = categoryResult ? categoryResult.name : 'General';
 
+        // Use uploadStatus if defined (from bundle size check), otherwise default to 'pending'
+        const finalStatus = typeof uploadStatus !== 'undefined' ? uploadStatus : 'pending';
+
         const result = await db.query(
             `INSERT INTO user_uploads (user_id, title, description, type, category, category_id, file_url, status, agreement_accepted, agreement_timestamp) 
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-            [user_id, title, description, type, detectedCategoryName, category_id, file_url, 'approved', true, new Date()]
+            [user_id, title, description, type, detectedCategoryName, category_id, file_url, finalStatus, true, new Date()]
         );
 
-        res.status(201).json({ success: true, message: 'Published successfully!', item: result.rows[0] });
+        res.status(201).json({
+            success: true,
+            message: finalStatus === 'pending' ? 'Upload submitted for admin review!' : 'Published successfully!',
+            item: result.rows[0],
+            requiresReview: finalStatus === 'pending'
+        });
     } catch (error) {
         console.error('Upload Error:', error);
         res.status(500).json({ success: false, message: 'Internal server error' });
@@ -235,6 +274,110 @@ router.get('/list', async (req, res) => {
         res.json({ success: true, items: result.rows });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Database error' });
+    }
+});
+
+// GET /api/community/app/:slug - Get single app by slug
+router.get('/app/:slug', async (req, res) => {
+    try {
+        const { slug } = req.params;
+        const result = await db.query(
+            `SELECT u.*, usr.username as author 
+             FROM user_uploads u 
+             LEFT JOIN users usr ON u.user_id = usr.id 
+             WHERE u.slug = $1 AND u.status = 'approved'`,
+            [slug]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Content not found' });
+        }
+
+        // Increment play count
+        await db.query('UPDATE user_uploads SET play_count = play_count + 1 WHERE slug = $1', [slug]);
+
+        res.json({ success: true, item: result.rows[0] });
+    } catch (error) {
+        console.error('[COMMUNITY] Error fetching app by slug:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch content' });
+    }
+});
+
+// POST /api/community/play/:id - Track app play
+router.post('/play/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user?.id || null;
+
+        // Increment play count
+        await db.query(
+            'UPDATE user_uploads SET play_count = play_count + 1 WHERE id = $1',
+            [id]
+        );
+
+        // Log activity
+        await db.query(
+            'INSERT INTO app_activity (upload_id, activity_type, user_id) VALUES ($1, $2, $3)',
+            [id, 'play', userId]
+        );
+
+        res.json({ success: true, message: 'Play tracked' });
+    } catch (error) {
+        console.error('[COMMUNITY] Error tracking play:', error);
+        res.status(500).json({ success: false, message: 'Failed to track play' });
+    }
+});
+
+// POST /api/community/like/:id - Like an app
+router.post('/like/:id', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        // Check if already liked
+        const existingLike = await db.query(
+            'SELECT id FROM app_activity WHERE upload_id = $1 AND user_id = $2 AND activity_type = $3',
+            [id, userId, 'like']
+        );
+
+        if (existingLike.rows.length > 0) {
+            return res.status(400).json({ success: false, message: 'Already liked' });
+        }
+
+        // Increment likes
+        await db.query(
+            'UPDATE user_uploads SET likes = likes + 1 WHERE id = $1',
+            [id]
+        );
+
+        // Log activity
+        await db.query(
+            'INSERT INTO app_activity (upload_id, activity_type, user_id) VALUES ($1, $2, $3)',
+            [id, 'like', userId]
+        );
+
+        res.json({ success: true, message: 'Liked successfully' });
+    } catch (error) {
+        console.error('[COMMUNITY] Error liking app:', error);
+        res.status(500).json({ success: false, message: 'Failed to like app' });
+    }
+});
+
+// GET /api/community/trending - Get trending apps
+router.get('/trending', async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT * FROM user_uploads 
+            WHERE status = 'approved' 
+            AND (visible IS NULL OR visible = true)
+            ORDER BY trending_score DESC, created_at DESC
+            LIMIT 10
+        `);
+
+        res.json({ success: true, uploads: result.rows });
+    } catch (error) {
+        console.error('[COMMUNITY] Error fetching trending:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch trending apps' });
     }
 });
 

@@ -95,6 +95,60 @@ router.patch('/users/:id/suspend', async (req, res) => {
     }
 });
 
+// --- UPLOAD MANAGEMENT & APPROVAL WORKFLOW ---
+
+// PUT /api/admin/uploads/:id/status - Approve or reject uploads
+router.put('/uploads/:id/status', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'approved' or 'rejected'
+
+        if (!['approved', 'rejected'].includes(status)) {
+            return res.status(400).json({ success: false, message: 'Invalid status' });
+        }
+
+        await db.query('UPDATE user_uploads SET status = $1 WHERE id = $2', [status, id]);
+
+        res.json({
+            success: true,
+            message: status === 'approved' ? 'Upload approved successfully' : 'Upload rejected'
+        });
+    } catch (error) {
+        console.error('[ADMIN] Error updating upload status:', error);
+        res.status(500).json({ success: false, message: 'Failed to update status' });
+    }
+});
+
+// PUT /api/admin/uploads/:id/featured - Toggle featured status
+router.put('/uploads/:id/featured', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { featured } = req.body;
+
+        await db.query('UPDATE user_uploads SET featured = $1 WHERE id = $2', [featured, id]);
+
+        res.json({ success: true, message: featured ? 'Marked as featured' : 'Removed from featured' });
+    } catch (error) {
+        console.error('[ADMIN] Error updating featured status:', error);
+        res.status(500).json({ success: false, message: 'Failed to update featured status' });
+    }
+});
+
+// PUT /api/admin/uploads/:id/rank - Update rank order
+router.put('/uploads/:id/rank', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { rank } = req.body;
+
+        await db.query('UPDATE user_uploads SET rank_order = $1 WHERE id = $2', [rank, id]);
+
+        res.json({ success: true, message: 'Rank updated successfully' });
+    } catch (error) {
+        console.error('[ADMIN] Error updating rank:', error);
+        res.status(500).json({ success: false, message: 'Failed to update rank' });
+    }
+});
+
 // --- CONTENT MANAGEMENT ---
 
 // GET /api/admin/uploads - List all uploads for moderation
@@ -162,6 +216,73 @@ router.delete('/categories/:id', async (req, res) => {
         res.json({ success: true, message: 'Category deleted' });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to delete category' });
+    }
+});
+
+// PUT /api/admin/uploads/:id/visibility - Toggle visibility (hide/show)
+router.put('/uploads/:id/visibility', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { visible } = req.body;
+
+        await db.query('UPDATE user_uploads SET visible = $1 WHERE id = $2', [visible, id]);
+
+        res.json({
+            success: true,
+            message: visible ? 'App is now visible' : 'App hidden from community'
+        });
+    } catch (error) {
+        console.error('[ADMIN] Error updating visibility:', error);
+        res.status(500).json({ success: false, message: 'Failed to update visibility' });
+    }
+});
+
+// POST /api/admin/uploads/:id/thumbnail - Upload manual thumbnail
+router.post('/uploads/:id/thumbnail', multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const dir = path.join(__dirname, '../public/thumbnails');
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            cb(null, dir);
+        },
+        filename: (req, file, cb) => {
+            // Sanitize filename
+            const ext = path.extname(file.originalname).toLowerCase();
+            const sanitized = `thumb-${req.params.id}-${Date.now()}${ext}`;
+            cb(null, sanitized);
+        }
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB strict limit
+    fileFilter: (req, file, cb) => {
+        // Only allow image MIME types
+        const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        const allowedExts = ['.jpg', '.jpeg', '.png', '.webp'];
+        const ext = path.extname(file.originalname).toLowerCase();
+
+        if (allowedMimes.includes(file.mimetype) && allowedExts.includes(ext)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only JPG, PNG, and WebP images allowed'));
+        }
+    }
+}).single('thumbnail'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+
+        const { id } = req.params;
+        const thumbnailPath = `/thumbnails/${req.file.filename}`;
+
+        await db.query(
+            'UPDATE user_uploads SET thumbnail_path = $1 WHERE id = $2',
+            [thumbnailPath, id]
+        );
+
+        res.json({ success: true, message: 'Thumbnail uploaded', path: thumbnailPath });
+    } catch (error) {
+        console.error('[ADMIN] Error uploading thumbnail:', error);
+        res.status(500).json({ success: false, message: error.message || 'Failed to upload thumbnail' });
     }
 });
 

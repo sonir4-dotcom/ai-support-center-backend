@@ -25,10 +25,13 @@ app.get("/health", (req, res) => {
     res.json({ status: "healthy" });
 });
 
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/resume', require('./routes/resumeRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/community', require('./routes/communityRoutes'));
+app.use('/api/import', require('./routes/importRoutes'));
+app.use('/api/recommendations', require('./routes/recommendationRoutes'));
+app.use('/api/chatbot', require('./routes/chatbotRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/pdf-to-text', require('./routes/pdfRoutes'));
 
